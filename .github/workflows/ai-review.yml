@@ -21,6 +21,9 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install google-genai
+        run: pip install --quiet google-genai
+
       - name: Run AI Review and comment on PR
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -37,8 +40,8 @@ jobs:
           import json
           import os
           import subprocess
-          import urllib.error
           import urllib.request
+          from google import genai
 
           api_key = os.environ.get("GEMINI_API_KEY", "").strip()
           if not api_key:
@@ -52,56 +55,24 @@ jobs:
               print("Empty diff, skipping AI review.")
               raise SystemExit(0)
 
-          models_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
-          with urllib.request.urlopen(models_url, timeout=30) as resp:
-              models_data = json.loads(resp.read().decode("utf-8"))
-
-          available = [
-              m["name"]
-              for m in models_data.get("models", [])
-              if "generateContent" in m.get("supportedGenerationMethods", [])
-              and "flash" in m["name"]
-          ]
-          if not available:
-              available = [
-                  m["name"]
-                  for m in models_data.get("models", [])
-                  if "generateContent" in m.get("supportedGenerationMethods", [])
-              ]
-          model_name = available[0]
-          print("Using Gemini model:", model_name)
-
+          client = genai.Client(api_key=api_key)
           prompt = (
               f"{os.environ['SYSTEM_PROMPT']}\n\n"
               f"Ось diff змін у Pull Request:\n```diff\n{diff[:12000]}\n```"
           )
 
-          url = (
-              f"https://generativelanguage.googleapis.com/v1beta/"
-              f"{model_name}:generateContent?key={api_key}"
+          response = client.models.generate_content(
+              model="gemini-2.5-flash",
+              contents=prompt,
           )
-          payload = {"contents": [{"parts": [{"text": prompt}]}]}
-
-          req = urllib.request.Request(
-              url,
-              data=json.dumps(payload).encode("utf-8"),
-              headers={"Content-Type": "application/json"},
-          )
-          try:
-              with urllib.request.urlopen(req, timeout=60) as resp:
-                  data = json.loads(resp.read().decode("utf-8"))
-          except urllib.error.HTTPError as e:
-              print("Gemini HTTP Error:", e.code, e.read().decode("utf-8", errors="replace"))
-              raise
-
-          review_text = data["candidates"][0]["content"]["parts"][0]["text"]
+          review_text = response.text or "Порожня відповідь від моделі."
 
           repo = os.environ["REPO"]
           pr_num = os.environ["PR_NUMBER"]
           comment_req = urllib.request.Request(
               f"https://api.github.com/repos/{repo}/issues/{pr_num}/comments",
               data=json.dumps(
-                  {"body": f"### 🤖 AI Code Review (`{model_name}`)\n\n{review_text}"}
+                  {"body": f"### 🤖 AI Code Review\n\n{review_text}"}
               ).encode("utf-8"),
               headers={
                   "Accept": "application/vnd.github+json",
