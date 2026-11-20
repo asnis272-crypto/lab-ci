@@ -1,3 +1,4 @@
+import os
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -20,7 +21,7 @@ class Cart:
         self._items: dict[str, Item] = {}
 
     def add(self, name: str, price: float, qty: int = 1) -> None:
-        if price < 0:
+        if price<0:
             raise ValueError("price must be non-negative")
         if qty <= 0:
             raise ValueError("qty must be positive")
