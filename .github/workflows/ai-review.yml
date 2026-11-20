@@ -1,0 +1,89 @@
+﻿name: AI Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+  models: read
+
+jobs:
+  ai-review:
+    name: AI Review
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Run AI Review and comment on PR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BASE_REF: ${{ github.base_ref }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.number }}
+          SYSTEM_PROMPT: >
+            Ти досвідчений Python-розробник і код-рев'юер. Проаналізуй git diff
+            pull request-а та вкажи: 1) логічні помилки, 2) проблеми читабельності
+            та неймінгу, 3) відсутні тести. Відповідай стисло українською мовою.
+        run: |
+          python - << 'EOF'
+          import json
+          import os
+          import subprocess
+          import urllib.request
+
+          base = os.environ["BASE_REF"]
+          diff = subprocess.check_output(
+              ["git", "diff", f"origin/{base}...HEAD"], text=True
+          )
+          if not diff.strip():
+              print("Empty diff, skipping AI review.")
+              raise SystemExit(0)
+
+          payload = {
+              "model": "openai/gpt-4o-mini",
+              "messages": [
+                  {"role": "system", "content": os.environ["SYSTEM_PROMPT"]},
+                  {
+                      "role": "user",
+                      "content": f"Ось diff змін у Pull Request:\n```diff\n{diff[:12000]}\n```",
+                  },
+              ],
+          }
+
+          req = urllib.request.Request(
+              "https://models.github.ai/inference/chat/completions",
+              data=json.dumps(payload).encode("utf-8"),
+              headers={
+                  "Content-Type": "application/json",
+                  "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
+              },
+          )
+          with urllib.request.urlopen(req, timeout=60) as resp:
+              data = json.loads(resp.read().decode("utf-8"))
+          review_text = data["choices"][0]["message"]["content"]
+
+          repo = os.environ["REPO"]
+          pr_num = os.environ["PR_NUMBER"]
+          comment_req = urllib.request.Request(
+              f"https://api.github.com/repos/{repo}/issues/{pr_num}/comments",
+              data=json.dumps(
+                  {"body": f"### 🤖 AI Code Review\n\n{review_text}"}
+              ).encode("utf-8"),
+              headers={
+                  "Accept": "application/vnd.github+json",
+                  "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
+                  "Content-Type": "application/json",
+              },
+              method="POST",
+          )
+          with urllib.request.urlopen(comment_req, timeout=30) as resp:
+              print("Posted comment status:", resp.status)
+          EOF
