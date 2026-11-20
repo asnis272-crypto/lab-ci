@@ -7,7 +7,6 @@ on:
 permissions:
   contents: read
   pull-requests: write
-  models: read
 
 jobs:
   ai-review:
@@ -41,6 +40,10 @@ jobs:
           import urllib.error
           import urllib.request
 
+          api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+          if not api_key:
+              raise RuntimeError("GEMINI_API_KEY secret is empty or missing!")
+
           base = os.environ["BASE_REF"]
           diff = subprocess.check_output(
               ["git", "diff", f"origin/{base}...HEAD"], text=True
@@ -49,48 +52,30 @@ jobs:
               print("Empty diff, skipping AI review.")
               raise SystemExit(0)
 
-          system_prompt = os.environ["SYSTEM_PROMPT"]
-          user_prompt = f"Ось diff змін у Pull Request:\n```diff\n{diff[:12000]}\n```"
-          gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
+          prompt = (
+              f"{os.environ['SYSTEM_PROMPT']}\n\n"
+              f"Ось diff змін у Pull Request:\n```diff\n{diff[:12000]}\n```"
+          )
 
-          if gemini_key:
-              url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
-              headers = {
-                  "Content-Type": "application/json",
-                  "Authorization": f"Bearer {gemini_key}",
-              }
-              model = "gemini-2.5-flash"
-          else:
-              url = "https://models.github.ai/inference/chat/completions"
-              headers = {
-                  "Accept": "application/vnd.github+json",
-                  "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
-                  "X-GitHub-Api-Version": "2022-11-28",
-                  "Content-Type": "application/json",
-              }
-              model = "openai/gpt-4o-mini"
-
-          payload = {
-              "model": model,
-              "messages": [
-                  {"role": "system", "content": system_prompt},
-                  {"role": "user", "content": user_prompt},
-              ],
-          }
+          url = (
+              "https://generativelanguage.googleapis.com/v1beta/models/"
+              f"gemini-2.5-flash:generateContent?key={api_key}"
+          )
+          payload = {"contents": [{"parts": [{"text": prompt}]}]}
 
           req = urllib.request.Request(
-              url, data=json.dumps(payload).encode("utf-8"), headers=headers
+              url,
+              data=json.dumps(payload).encode("utf-8"),
+              headers={"Content-Type": "application/json"},
           )
           try:
               with urllib.request.urlopen(req, timeout=60) as resp:
-                  raw = resp.read().decode("utf-8")
-                  print("HTTP status:", resp.status, "Body len:", len(raw))
+                  data = json.loads(resp.read().decode("utf-8"))
           except urllib.error.HTTPError as e:
-              print("HTTP Error:", e.code, e.read().decode("utf-8", errors="replace"))
+              print("Gemini HTTP Error:", e.code, e.read().decode("utf-8", errors="replace"))
               raise
 
-          data = json.loads(raw)
-          review_text = data["choices"][0]["message"]["content"]
+          review_text = data["candidates"][0]["content"]["parts"][0]["text"]
 
           repo = os.environ["REPO"]
           pr_num = os.environ["PR_NUMBER"]
