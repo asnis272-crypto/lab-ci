@@ -1,4 +1,4 @@
-﻿name: AI Code Review
+name: AI Code Review
 
 on:
   pull_request:
@@ -25,6 +25,7 @@ jobs:
       - name: Run AI Review and comment on PR
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           BASE_REF: ${{ github.base_ref }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.number }}
@@ -37,6 +38,7 @@ jobs:
           import json
           import os
           import subprocess
+          import urllib.error
           import urllib.request
 
           base = os.environ["BASE_REF"]
@@ -47,27 +49,47 @@ jobs:
               print("Empty diff, skipping AI review.")
               raise SystemExit(0)
 
+          system_prompt = os.environ["SYSTEM_PROMPT"]
+          user_prompt = f"Ось diff змін у Pull Request:\n```diff\n{diff[:12000]}\n```"
+          gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
+
+          if gemini_key:
+              url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+              headers = {
+                  "Content-Type": "application/json",
+                  "Authorization": f"Bearer {gemini_key}",
+              }
+              model = "gemini-2.5-flash"
+          else:
+              url = "https://models.github.ai/inference/chat/completions"
+              headers = {
+                  "Accept": "application/vnd.github+json",
+                  "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
+                  "X-GitHub-Api-Version": "2022-11-28",
+                  "Content-Type": "application/json",
+              }
+              model = "openai/gpt-4o-mini"
+
           payload = {
-              "model": "openai/gpt-4o-mini",
+              "model": model,
               "messages": [
-                  {"role": "system", "content": os.environ["SYSTEM_PROMPT"]},
-                  {
-                      "role": "user",
-                      "content": f"Ось diff змін у Pull Request:\n```diff\n{diff[:12000]}\n```",
-                  },
+                  {"role": "system", "content": system_prompt},
+                  {"role": "user", "content": user_prompt},
               ],
           }
 
           req = urllib.request.Request(
-              "https://models.github.ai/inference/chat/completions",
-              data=json.dumps(payload).encode("utf-8"),
-              headers={
-                  "Content-Type": "application/json",
-                  "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
-              },
+              url, data=json.dumps(payload).encode("utf-8"), headers=headers
           )
-          with urllib.request.urlopen(req, timeout=60) as resp:
-              data = json.loads(resp.read().decode("utf-8"))
+          try:
+              with urllib.request.urlopen(req, timeout=60) as resp:
+                  raw = resp.read().decode("utf-8")
+                  print("HTTP status:", resp.status, "Body len:", len(raw))
+          except urllib.error.HTTPError as e:
+              print("HTTP Error:", e.code, e.read().decode("utf-8", errors="replace"))
+              raise
+
+          data = json.loads(raw)
           review_text = data["choices"][0]["message"]["content"]
 
           repo = os.environ["REPO"]
