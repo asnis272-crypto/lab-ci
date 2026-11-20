@@ -62,9 +62,7 @@ def test_add_non_positive_qty_raises(empty_cart: Cart, qty: int) -> None:
         (100, 0.0),
     ],
 )
-def test_total_with_valid_discounts(
-    populated_cart: Cart, discount: float, expected: float
-) -> None:
+def test_total_with_valid_discounts(populated_cart: Cart, discount: float, expected: float) -> None:
     assert populated_cart.total(discount_percent=discount) == pytest.approx(expected)
 
 
