@@ -1,0 +1,86 @@
+name: AI Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  ai-review:
+    name: AI Review
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install google-genai
+        run: pip install --quiet google-genai
+
+      - name: Run AI Review and comment on PR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          BASE_REF: ${{ github.base_ref }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.number }}
+          SYSTEM_PROMPT: >
+            Ти досвідчений Python-розробник і код-рев'юер. Проаналізуй git diff
+            pull request-а та вкажи: 1) логічні помилки, 2) проблеми читабельності
+            та неймінгу, 3) відсутні тести. Відповідай стисло українською мовою.
+        run: |
+          python - << 'EOF'
+          import json
+          import os
+          import subprocess
+          import urllib.request
+          from google import genai
+
+          api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+          if not api_key:
+              raise RuntimeError("GEMINI_API_KEY secret is empty or missing!")
+
+          base = os.environ["BASE_REF"]
+          diff = subprocess.check_output(
+              ["git", "diff", f"origin/{base}...HEAD"], text=True
+          )
+          if not diff.strip():
+              print("Empty diff, skipping AI review.")
+              raise SystemExit(0)
+
+          client = genai.Client(api_key=api_key)
+          prompt = (
+              f"{os.environ['SYSTEM_PROMPT']}\n\n"
+              f"Ось diff змін у Pull Request:\n```diff\n{diff[:12000]}\n```"
+          )
+
+          response = client.models.generate_content(
+              model="gemini-2.5-flash",
+              contents=prompt,
+          )
+          review_text = response.text or "Порожня відповідь від моделі."
+
+          repo = os.environ["REPO"]
+          pr_num = os.environ["PR_NUMBER"]
+          comment_req = urllib.request.Request(
+              f"https://api.github.com/repos/{repo}/issues/{pr_num}/comments",
+              data=json.dumps(
+                  {"body": f"### 🤖 AI Code Review\n\n{review_text}"}
+              ).encode("utf-8"),
+              headers={
+                  "Accept": "application/vnd.github+json",
+                  "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
+                  "Content-Type": "application/json",
+              },
+              method="POST",
+          )
+          with urllib.request.urlopen(comment_req, timeout=30) as resp:
+              print("Posted comment status:", resp.status)
+          EOF
